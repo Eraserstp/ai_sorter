@@ -56,3 +56,20 @@ def test_classify_one_accepts_delete_json(tmp_path):
     assert decision.destination_id is None
     assert decision.destination_name == "Удалить"
     assert decision.confidence == 92
+
+
+def test_prompt_update_prompt_is_english(tmp_path):
+    file_path = tmp_path / "invoice.txt"
+    file_path.write_text("invoice", encoding="utf-8")
+    processor = SortProcessor(Database(tmp_path / "db.sqlite3"))
+
+    prompt = processor.build_prompt_update_prompt(
+        file_path,
+        Destination(1, "Invoices", "/tmp/invoices", "billing documents", ""),
+        Destination(2, "Pictures", "/tmp/pictures", "photos", "documents"),
+        "This is a billing file, not a photo.",
+    )
+
+    assert "The user corrected a file sorting decision." in prompt
+    assert "Return only a JSON object" in prompt
+    assert not any("а" <= char.lower() <= "я" or char == "ё" for char in prompt)

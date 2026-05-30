@@ -53,7 +53,7 @@ class SortProcessor:
                 self._log(f"Анализ изображения: {path.name}")
                 description = client.generate(
                     settings.vision_model,
-                    "Подробно, но кратко опиши содержимое изображения для последующей сортировки файла.",
+                    "Describe the image content in concise but useful detail for later file sorting. Focus on visible subjects, text, document type, context, and any clues that identify the file category.",
                     images=[path],
                 )
                 self.db.save_media_analysis(MediaAnalysis(digest, str(path), "image", description))
@@ -68,13 +68,13 @@ class SortProcessor:
                             return
                         note = client.generate(
                             settings.vision_model,
-                            f"Опиши содержимое кадра {idx} из видео для последующего общего анализа.",
+                            f"Describe frame {idx} from this video for later overall video classification. Focus on visible subjects, scene, text, and category clues.",
                             images=[frame],
                         )
-                        frame_notes.append(f"Кадр {idx}: {note}")
+                        frame_notes.append(f"Frame {idx}: {note}")
                     description = client.generate(
                         settings.sorter_model,
-                        "Сделай краткий вывод о содержимом видео по описаниям кадров:\n" + "\n".join(frame_notes),
+                        "Summarize the likely video content from these frame descriptions for later file sorting. Mention subjects, scene type, document/screen/video category, and any strong classification clues:\n" + "\n".join(frame_notes),
                     )
                     self.db.save_media_analysis(MediaAnalysis(digest, str(path), "video", description))
                 finally:
@@ -206,6 +206,32 @@ File/directory context:
                 return dest
         return None
 
+    def build_prompt_update_prompt(
+        self,
+        file_path: Path,
+        manual_destination: Destination,
+        wrong_destination: Destination | None,
+        reason: str,
+    ) -> str:
+        wrong_name = wrong_destination.name if wrong_destination else "none"
+        wrong_negative = wrong_destination.negative_prompt if wrong_destination else ""
+        return f"""
+The user corrected a file sorting decision.
+
+File context:
+{self.build_file_context(file_path)}
+
+Correct destination: {manual_destination.name}
+Current positive prompt for the correct destination: {manual_destination.positive_prompt}
+User's reason for the correction: {reason}
+Incorrectly selected destination: {wrong_name}
+Current negative prompt for the incorrect destination: {wrong_negative}
+
+Return only a JSON object with these keys:
+- "positive_prompt": an improved positive prompt for the correct destination
+- "negative_prompt": an improved negative prompt for the incorrectly selected destination
+""".strip()
+
     def suggest_prompt_update(
         self,
         file_path: Path,
@@ -215,19 +241,7 @@ File/directory context:
     ) -> tuple[str, str]:
         settings = self.db.get_settings()
         client = OllamaClient(settings.ollama_url)
-        prompt = f"""
-Пользователь исправил сортировку файла.
-Контекст файла:
-{self.build_file_context(file_path)}
-
-Правильное назначение: {manual_destination.name}
-Текущий positive prompt: {manual_destination.positive_prompt}
-Причина пользователя: {reason}
-Ошибочно выбранное назначение: {wrong_destination.name if wrong_destination else 'нет'}
-Текущий negative prompt ошибочного назначения: {wrong_destination.negative_prompt if wrong_destination else ''}
-
-Верни только JSON: {{"positive_prompt": "улучшенный positive prompt для правильного назначения", "negative_prompt": "улучшенный negative prompt для ошибочного назначения"}}.
-""".strip()
+        prompt = self.build_prompt_update_prompt(file_path, manual_destination, wrong_destination, reason)
         raw = client.generate(settings.sorter_model, prompt, json_response=True)
         data = json.loads(raw)
         return str(data.get("positive_prompt", manual_destination.positive_prompt)), str(data.get("negative_prompt", ""))
