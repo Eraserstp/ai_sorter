@@ -10,7 +10,7 @@ AI Sorter is a Linux GTK application for sorting download folders with a local o
 - Pre-analyze images and videos, caching media descriptions by SHA-256 hash in SQLite.
 - Extract up to 10 evenly sampled video frames with `ffmpeg`, analyze each frame, summarize the video, and remove frame cache files.
 - Classify all top-level files with a strict alias-based JSON prompt that compares every destination, honors AVOID clauses, and allows DELETE only for obvious junk.
-- Inspect ZIP and TAR archives by sampling up to 10 image/text entries for content analysis and listing remaining archive entries by name, extension, and size.
+- Inspect ZIP, TAR, 7z, RAR, XZ, BZ and BZ2 archives by sampling up to 10 image/text entries for content analysis and listing remaining archive entries by name, extension, and size.
 - Review model decisions, confidence, and rationale before moving files or sending files to the trash.
 - Manually correct rejected decisions and ask Ollama to suggest prompt improvements.
 
@@ -21,6 +21,7 @@ AI Sorter is a Linux GTK application for sorting download folders with a local o
 - Ollama reachable locally at `http://localhost:11434` or a configured remote URL
 - `ffmpeg` for video frame extraction
 - `gio` for trash integration (falls back to `~/.local/share/Trash/files`)
+- `7z`, `7zz`, or `7za` for inspecting `.7z` and `.rar` archives
 
 ## Run from source
 

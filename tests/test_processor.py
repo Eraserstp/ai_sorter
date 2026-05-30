@@ -110,3 +110,67 @@ def test_archive_context_analyzes_sampled_images(tmp_path):
     assert "photo.jpg" in context
     assert "Image analysis: a photographed receipt" in context
     assert client.images_were_sent
+
+
+def test_single_file_xz_archive_context_reads_text(tmp_path):
+    import lzma
+
+    archive_path = tmp_path / "report.txt.xz"
+    archive_path.write_bytes(lzma.compress(b"quarterly archive report"))
+
+    processor = SortProcessor(Database(tmp_path / "db.sqlite3"))
+    context = processor.build_file_context(archive_path, FakeClient(''), "")
+
+    assert processor.is_supported_archive(archive_path)
+    assert "report.txt" in context
+    assert "quarterly archive report" in context
+
+
+def test_single_file_bz2_archive_context_reads_text(tmp_path):
+    import bz2
+
+    archive_path = tmp_path / "notes.txt.bz2"
+    archive_path.write_bytes(bz2.compress(b"compressed meeting notes"))
+
+    processor = SortProcessor(Database(tmp_path / "db.sqlite3"))
+    context = processor.build_file_context(archive_path, FakeClient(''), "")
+
+    assert processor.is_supported_archive(archive_path)
+    assert "notes.txt" in context
+    assert "compressed meeting notes" in context
+
+
+def test_7z_and_rar_are_supported_archive_extensions(tmp_path):
+    processor = SortProcessor(Database(tmp_path / "db.sqlite3"))
+
+    assert processor.is_supported_archive(tmp_path / "photos.7z")
+    assert processor.is_supported_archive(tmp_path / "documents.rar")
+
+
+def test_external_7z_reader_samples_only_ten_candidates(tmp_path, monkeypatch):
+    import subprocess
+
+    archive_path = tmp_path / "bundle.7z"
+    processor = SortProcessor(Database(tmp_path / "db.sqlite3"))
+    monkeypatch.setattr(processor, "_external_archive_tool", lambda: "7z")
+    extract_calls = []
+
+    def fake_run(args, check, capture_output, text=False):
+        if args[1] == "l":
+            records = []
+            for index in range(12):
+                records.append(f"Path = doc_{index:02d}.txt\nSize = 20\nFolder = -\n")
+            records.append("Path = data.bin\nSize = 3\nFolder = -\n")
+            return subprocess.CompletedProcess(args, 0, stdout="\n".join(records))
+        if args[1] == "x":
+            extract_calls.append(args[-1])
+            return subprocess.CompletedProcess(args, 0, stdout=f"content from {args[-1]}".encode())
+        raise AssertionError(args)
+
+    monkeypatch.setattr("ai_sorter.processor.subprocess.run", fake_run)
+
+    entries = processor._read_external_archive_entries(archive_path, 1024)
+
+    assert len(entries) == 13
+    assert len(extract_calls) == 10
+    assert sum(1 for _name, _size, _data, has_content in entries if has_content) == 10

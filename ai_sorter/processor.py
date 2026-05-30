@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import bz2
 import json
+import lzma
 import re
 import shutil
+import subprocess
 import tarfile
 import tempfile
 import zipfile
@@ -25,6 +28,7 @@ from .models import Destination, MediaAnalysis, SortDecision
 from .ollama import OllamaClient, OllamaError
 
 ProgressCallback = Callable[[str], None]
+ArchiveEntry = tuple[str, int, bytes, bool]
 
 DELETE_ALIAS = "DELETE"
 
@@ -230,18 +234,41 @@ File/directory context:
 
     def is_supported_archive(self, path: Path) -> bool:
         lower_name = path.name.lower()
-        return zipfile.is_zipfile(path) or tarfile.is_tarfile(path) or lower_name.endswith((".zip", ".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz"))
+        archive_extensions = (
+            ".zip",
+            ".tar",
+            ".tar.gz",
+            ".tgz",
+            ".tar.bz2",
+            ".tbz2",
+            ".tar.xz",
+            ".txz",
+            ".7z",
+            ".rar",
+            ".xz",
+            ".bz",
+            ".bz2",
+        )
+        if lower_name.endswith(archive_extensions):
+            return True
+        return zipfile.is_zipfile(path) or self._safe_is_tarfile(path)
+
+    def _safe_is_tarfile(self, path: Path) -> bool:
+        try:
+            return tarfile.is_tarfile(path)
+        except OSError:
+            return False
 
     def build_archive_context(self, path: Path, client: OllamaClient, vision_model: str, sample_limit: int = 10) -> str:
         try:
             entries = self._read_archive_entries(path)
-        except (OSError, tarfile.TarError, zipfile.BadZipFile) as exc:
+        except (OSError, tarfile.TarError, zipfile.BadZipFile, lzma.LZMAError, EOFError, subprocess.CalledProcessError) as exc:
             return f"Archive content analysis: unable to inspect archive ({exc})."
 
         if not entries:
             return "Archive content analysis: archive is empty or contains no regular files."
 
-        sample_candidates = [entry for entry in entries if self._archive_entry_is_image(entry[0]) or self._archive_entry_is_text(entry[0], entry[2])]
+        sample_candidates = [entry for entry in entries if entry[3] and (self._archive_entry_is_image(entry[0]) or self._archive_entry_is_text(entry[0], entry[2]))]
         sampled_entries = self._even_sample(sample_candidates, sample_limit)
         sampled_names = {entry[0] for entry in sampled_entries}
         other_entries = [entry for entry in entries if entry[0] not in sampled_names]
@@ -254,7 +281,7 @@ File/directory context:
             lines.append("Sampled file content:")
         with tempfile.TemporaryDirectory(prefix=f"ai-sorter-archive-{path.stem}-") as tmpdir:
             tmpdir_path = Path(tmpdir)
-            for index, (name, size, data) in enumerate(sampled_entries, start=1):
+            for index, (name, size, data, _has_content) in enumerate(sampled_entries, start=1):
                 suffix = Path(name).suffix.lower()
                 lines.append(f"{index}. {name} ({size} bytes, extension {suffix or '(none)'})")
                 if self._archive_entry_is_image(name):
@@ -278,14 +305,14 @@ File/directory context:
 
         if other_entries:
             lines.append("Other archive files (metadata only):")
-            for name, size, _data in other_entries[:200]:
+            for name, size, _data, _has_content in other_entries[:200]:
                 suffix = Path(name).suffix.lower() or "(none)"
                 lines.append(f"- {name} | extension: {suffix} | size: {size} bytes")
             if len(other_entries) > 200:
                 lines.append(f"- ... {len(other_entries) - 200} more file(s) omitted from metadata list")
         return "\n".join(lines)
 
-    def _read_archive_entries(self, path: Path, max_read_bytes: int = 2 * 1024 * 1024) -> list[tuple[str, int, bytes]]:
+    def _read_archive_entries(self, path: Path, max_read_bytes: int = 2 * 1024 * 1024) -> list[ArchiveEntry]:
         if zipfile.is_zipfile(path):
             with zipfile.ZipFile(path) as archive:
                 entries = []
@@ -293,7 +320,7 @@ File/directory context:
                     if info.is_dir():
                         continue
                     with archive.open(info) as fh:
-                        entries.append((info.filename, info.file_size, fh.read(max_read_bytes)))
+                        entries.append((info.filename, info.file_size, fh.read(max_read_bytes), True))
                 return entries
         if tarfile.is_tarfile(path):
             with tarfile.open(path) as archive:
@@ -305,11 +332,17 @@ File/directory context:
                     if fh is None:
                         continue
                     with fh:
-                        entries.append((member.name, member.size, fh.read(max_read_bytes)))
+                        entries.append((member.name, member.size, fh.read(max_read_bytes), True))
                 return entries
+        if self._is_single_file_xz(path):
+            return self._read_single_compressed_file(path, lzma.open, max_read_bytes)
+        if self._is_single_file_bz(path):
+            return self._read_single_compressed_file(path, bz2.open, max_read_bytes)
+        if self._is_external_archive(path):
+            return self._read_external_archive_entries(path, max_read_bytes)
         return []
 
-    def _even_sample(self, entries: list[tuple[str, int, bytes]], limit: int) -> list[tuple[str, int, bytes]]:
+    def _even_sample(self, entries: list[ArchiveEntry], limit: int) -> list[ArchiveEntry]:
         if len(entries) <= limit:
             return entries
         if limit <= 1:
@@ -318,11 +351,89 @@ File/directory context:
         indexes = sorted({round(i * step) for i in range(limit)})
         return [entries[index] for index in indexes]
 
+    def _is_single_file_xz(self, path: Path) -> bool:
+        lower_name = path.name.lower()
+        return lower_name.endswith(".xz") and not lower_name.endswith((".tar.xz", ".txz"))
+
+    def _is_single_file_bz(self, path: Path) -> bool:
+        lower_name = path.name.lower()
+        return lower_name.endswith((".bz", ".bz2")) and not lower_name.endswith((".tar.bz2", ".tbz2"))
+
+    def _is_external_archive(self, path: Path) -> bool:
+        return path.name.lower().endswith((".7z", ".rar"))
+
+    def _read_single_compressed_file(self, path: Path, opener: Callable[..., Any], max_read_bytes: int) -> list[ArchiveEntry]:
+        entry_name = self._single_compressed_entry_name(path)
+        with opener(path, "rb") as fh:
+            data = fh.read(max_read_bytes)
+        return [(entry_name, len(data), data, True)]
+
+    def _single_compressed_entry_name(self, path: Path) -> str:
+        lower_name = path.name.lower()
+        if lower_name.endswith(".bz2"):
+            return path.name[:-4] or path.stem
+        if lower_name.endswith((".xz", ".bz")):
+            return path.name[:-3] or path.stem
+        return path.stem
+
+    def _read_external_archive_entries(self, path: Path, max_read_bytes: int) -> list[ArchiveEntry]:
+        tool = self._external_archive_tool()
+        if tool is None:
+            raise OSError("7z/7zz/7za executable is required to inspect .7z and .rar archives")
+        metadata = self._list_external_archive(tool, path)
+        candidates = [entry for entry in metadata if self._archive_entry_is_image(entry[0]) or self._archive_entry_name_is_text(entry[0])]
+        sampled_names = {entry[0] for entry in self._even_sample(candidates, 10)}
+        entries: list[ArchiveEntry] = []
+        for name, size, _data, _has_content in metadata:
+            if name in sampled_names:
+                data = self._extract_external_archive_entry(tool, path, name, max_read_bytes)
+                entries.append((name, size, data, True))
+            else:
+                entries.append((name, size, b"", False))
+        return entries
+
+    def _external_archive_tool(self) -> str | None:
+        for command in ("7z", "7zz", "7za"):
+            path = shutil.which(command)
+            if path:
+                return path
+        return None
+
+    def _list_external_archive(self, tool: str, path: Path) -> list[ArchiveEntry]:
+        completed = subprocess.run([tool, "l", "-slt", str(path)], check=True, capture_output=True, text=True)
+        entries: list[ArchiveEntry] = []
+        current: dict[str, str] = {}
+        for line in completed.stdout.splitlines() + [""]:
+            if not line.strip():
+                self._append_external_archive_record(entries, current)
+                current = {}
+                continue
+            if " = " in line:
+                key, value = line.split(" = ", 1)
+                current[key] = value
+        return entries
+
+    def _append_external_archive_record(self, entries: list[ArchiveEntry], record: dict[str, str]) -> None:
+        if not record or record.get("Folder") == "+" or "Path" not in record:
+            return
+        try:
+            size = int(record.get("Size", "0") or 0)
+        except ValueError:
+            size = 0
+        entries.append((record["Path"], size, b"", False))
+
+    def _extract_external_archive_entry(self, tool: str, archive_path: Path, entry_name: str, max_read_bytes: int) -> bytes:
+        completed = subprocess.run([tool, "x", "-so", str(archive_path), entry_name], check=True, capture_output=True)
+        return completed.stdout[:max_read_bytes]
+
     def _archive_entry_is_image(self, name: str) -> bool:
         return Path(name).suffix.lower() in IMAGE_EXTENSIONS
 
+    def _archive_entry_name_is_text(self, name: str) -> bool:
+        return Path(name).suffix.lower() in TEXT_EXTENSIONS
+
     def _archive_entry_is_text(self, name: str, data: bytes) -> bool:
-        if Path(name).suffix.lower() in TEXT_EXTENSIONS:
+        if self._archive_entry_name_is_text(name):
             return True
         sample = data[:4096]
         if b"\x00" in sample:
