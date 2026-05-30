@@ -6,10 +6,10 @@ AI Sorter is a Linux GTK application for sorting download folders with a local o
 
 - Configure one or more top-level source directories and excluded file names/paths.
 - Configure Ollama URL, a general sorting model, and a multimodal model for image/video pre-analysis.
-- Maintain destination folders with positive and optional negative prompts.
+- Maintain destination folders with framed prompt editors and a filesystem folder chooser for destination paths.
 - Pre-analyze images and videos, caching media descriptions by SHA-256 hash in SQLite.
 - Extract up to 10 evenly sampled video frames with `ffmpeg`, analyze each frame, summarize the video, and remove frame cache files.
-- Classify all top-level files using metadata, text previews for text files, cached media descriptions for images/videos, and prompt-defined destinations.
+- Classify all top-level files with a strict alias-based JSON prompt that compares every destination, honors AVOID clauses, and allows DELETE only for obvious junk.
 - Review model decisions, confidence, and rationale before moving files or sending files to the trash.
 - Manually correct rejected decisions and ask Ollama to suggest prompt improvements.
 

@@ -48,3 +48,4 @@ class SortDecision:
     destination_path: str
     reason: str
     confidence: int
+    action: str = "move"

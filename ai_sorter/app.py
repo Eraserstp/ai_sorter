@@ -6,7 +6,7 @@ from pathlib import Path
 import gi
 
 gi.require_version("Gtk", "4.0")
-from gi.repository import Gdk, GLib, Gtk  # noqa: E402
+from gi.repository import Gdk, Gio, GLib, Gtk  # noqa: E402
 
 from .database import Database
 from .file_utils import iter_top_level_files, move_file, trash_file
@@ -22,6 +22,7 @@ class TextList(Gtk.Box):
         self.view = Gtk.TextView(monospace=True)
         self.view.set_vexpand(True)
         scroller = Gtk.ScrolledWindow(min_content_height=120)
+        scroller.add_css_class("frame")
         scroller.set_child(self.view)
         self.append(scroller)
 
@@ -89,8 +90,14 @@ class AiSorterWindow(Gtk.ApplicationWindow):
         self.dest_negative = Gtk.TextView(wrap_mode=Gtk.WrapMode.WORD_CHAR)
         grid.attach(Gtk.Label(label="Имя", xalign=0), 0, 0, 1, 1)
         grid.attach(self.dest_name, 1, 0, 1, 1)
+        path_box = Gtk.Box(spacing=6)
+        browse_path = Gtk.Button(label="Выбрать…")
+        browse_path.connect("clicked", self.on_choose_destination_path)
+        path_box.append(self.dest_path)
+        path_box.append(browse_path)
+        self.dest_path.set_hexpand(True)
         grid.attach(Gtk.Label(label="Путь", xalign=0), 0, 1, 1, 1)
-        grid.attach(self.dest_path, 1, 1, 1, 1)
+        grid.attach(path_box, 1, 1, 1, 1)
         grid.attach(Gtk.Label(label="Позитивный промпт", xalign=0), 0, 2, 1, 1)
         grid.attach(self._wrap_textview(self.dest_positive, 120), 1, 2, 1, 1)
         grid.attach(Gtk.Label(label="Негативный промпт", xalign=0), 0, 3, 1, 1)
@@ -119,6 +126,7 @@ class AiSorterWindow(Gtk.ApplicationWindow):
         box.append(controls)
         self.progress = Gtk.TextView(editable=False, monospace=True)
         progress_scroller = Gtk.ScrolledWindow(min_content_height=90)
+        progress_scroller.add_css_class("frame")
         progress_scroller.set_child(self.progress)
         box.append(progress_scroller)
         self.result_list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.SINGLE)
@@ -130,8 +138,36 @@ class AiSorterWindow(Gtk.ApplicationWindow):
 
     def _wrap_textview(self, view: Gtk.TextView, height: int) -> Gtk.ScrolledWindow:
         scroller = Gtk.ScrolledWindow(min_content_height=height)
+        scroller.add_css_class("frame")
+        view.set_left_margin(6)
+        view.set_right_margin(6)
+        view.set_top_margin(6)
+        view.set_bottom_margin(6)
         scroller.set_child(view)
         return scroller
+
+    def on_choose_destination_path(self, _button: Gtk.Button) -> None:
+        chooser = Gtk.FileChooserNative.new(
+            "Выберите каталог назначения",
+            self,
+            Gtk.FileChooserAction.SELECT_FOLDER,
+            "Выбрать",
+            "Отмена",
+        )
+        current = self.dest_path.get_text().strip()
+        if current:
+            folder = Path(current).expanduser()
+            if folder.exists():
+                chooser.set_current_folder(Gio.File.new_for_path(str(folder)))
+        chooser.connect("response", self.on_destination_path_chosen)
+        chooser.show()
+
+    def on_destination_path_chosen(self, chooser: Gtk.FileChooserNative, response: int) -> None:
+        if response == Gtk.ResponseType.ACCEPT:
+            file = chooser.get_file()
+            if file:
+                self.dest_path.set_text(file.get_path() or "")
+        chooser.destroy()
 
     def _text(self, view: Gtk.TextView) -> str:
         buffer = view.get_buffer()
@@ -237,7 +273,8 @@ class AiSorterWindow(Gtk.ApplicationWindow):
             row = Gtk.ListBoxRow()
             grid = Gtk.Grid(column_spacing=10, row_spacing=4, margin_top=6, margin_bottom=6, margin_start=6, margin_end=6)
             grid.attach(Gtk.Label(label=decision.file_path.name, xalign=0), 0, 0, 1, 1)
-            grid.attach(Gtk.Label(label=decision.destination_name, xalign=0), 1, 0, 1, 1)
+            destination_label = decision.destination_name if decision.action != "delete" else "DELETE / удалить"
+            grid.attach(Gtk.Label(label=destination_label, xalign=0), 1, 0, 1, 1)
             confidence = Gtk.Label(label=f"{decision.confidence}%", xalign=0)
             confidence.add_css_class("success" if decision.confidence >= 50 else "error")
             grid.attach(confidence, 2, 0, 1, 1)
@@ -343,6 +380,11 @@ class ManualCorrectionDialog(Gtk.Dialog):
         box.append(Gtk.Label(label="Выберите правильное назначение и опишите причину", xalign=0))
         box.append(self.combo)
         scroller = Gtk.ScrolledWindow(min_content_height=120)
+        scroller.add_css_class("frame")
+        self.reason_view.set_left_margin(6)
+        self.reason_view.set_right_margin(6)
+        self.reason_view.set_top_margin(6)
+        self.reason_view.set_bottom_margin(6)
         scroller.set_child(self.reason_view)
         box.append(scroller)
 
